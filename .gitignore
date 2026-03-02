@@ -1,0 +1,5 @@
+.env
+.venv/
+pycache/
+imgs/*
+record/*
