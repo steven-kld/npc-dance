@@ -1,0 +1,33 @@
+services:
+  npc:
+    build: .
+    ports:
+      - "6080:6080"   # noVNC → open http://localhost:6080 to watch the browser
+      - "8000:8000"   # agent WebSocket → ws://localhost:8000/ws
+    shm_size: '256mb'   # Chrome needs >64MB /dev/shm (Docker default) to avoid "Aw, Snap!"
+    cap_add:
+      - SYS_ADMIN     # required for Chrome's sandbox (replaces --no-sandbox)
+    devices:
+      - /dev/dri:/dev/dri  # GPU passthrough for Intel / AMD
+    environment:
+      - NO_VNCVIEWER=1
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OLLAMA_URL=${OLLAMA_URL}
+      - OLLAMA_TOKEN=${OLLAMA_TOKEN}
+    volumes:
+      - ./flows:/home/npc/app/flows   # persist flow memory on host
+      - ./result.jpg:/home/npc/app/result.jpg
+
+# NVIDIA GPU: uncomment and run with: docker compose --profile nvidia up
+#
+#   npc-nvidia:
+#     extends:
+#       service: npc
+#     profiles: [nvidia]
+#     deploy:
+#       resources:
+#         reservations:
+#           devices:
+#             - driver: nvidia
+#               count: all
+#               capabilities: [gpu]

@@ -1,6 +1,10 @@
-opencv-python
-numpy
-pytesseract
 pyautogui
 python-xlib
 Pillow
+requests
+langgraph
+langchain-anthropic
+langchain-core
+fastapi
+uvicorn[standard]
+websockets

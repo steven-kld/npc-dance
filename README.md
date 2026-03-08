@@ -1,167 +1,153 @@
 # NPC Dance
 
-A screen automation toolkit that uses computer vision and OCR to read the screen and control mouse/keyboard inputs. Designed to run against a live X11 display (real or virtual via Xvfb).
+A chat-driven browser automation agent. Talk to it in natural language — it controls a real Chrome browser using computer vision and remembers how to do tasks across sessions.
 
 ---
 
 ## Architecture
 
-The project has four classes that work as a pipeline:
-
 ```
-Workspace ── starts Xvfb + Chrome + VNC, sets DISPLAY, patches pyautogui
+User (WebSocket chat)
     │
     ▼
-Eye ──── takes screenshot, preprocesses image, runs OCR → list of text elements
+agent.py ── LangGraph agent loop (Claude claude-sonnet-4-6)
+    │            ├── navigate / click / type / scroll / screenshot
+    │            ├── save_flow / read_flow / list_flows   ← persistent memory
+    │            └── ask_user                             ← pauses, asks, resumes
     │
-    └──► Hand ──── moves mouse along a Bezier curve, clicks, types via clipboard
+    ├──► Eye (eye.py) ── screenshot → Ollama qwen2.5vl:7b → element coordinates
     │
-    └──► Memory ─── listens for real mouse clicks via X11 RECORD, logs to JSON
-                    optionally calls Eye to identify what was clicked
+    └──► Hand (hand.py) ── Bezier mouse movement, xclip paste, keyboard
+
+Workspace (workspace.py) ── Xvfb :2 + Chrome + x11vnc (always running)
+cursor_highlight.py ── orange ring overlay that follows the automation cursor
+noVNC ── browser view at http://localhost:6080/vnc.html
 ```
 
 ### `Workspace` ([workspace.py](workspace.py))
 
-Manages the virtual desktop environment. On construction it spawns a child process of itself (`workspace.py --run`) which:
+Starts the virtual desktop environment:
+1. Xvfb on display `:2` (1920×1080)
+2. Google Chrome (no URL — navigation is done by `Hand.navigate()`)
+3. x11vnc on port `5900`
+4. Touches `/tmp/space_ready` to signal readiness
 
-1. Starts **Xvfb** on display `:2` (2880×1620)
-2. Configures Chrome preferences (zoom level)
-3. Launches **Google Chrome** against `:2`, optionally at a given URL
-4. Starts **x11vnc** on port `5900`
-5. Opens **vncviewer** pointed at `localhost:5900`
-6. Touches `/tmp/space_ready` to signal readiness
+`connect()` — lightweight function that patches pyautogui onto the already-running display `:2`. Used by `agent.py` at startup.
 
-The parent constructor blocks until `/tmp/space_ready` appears, then sets `os.environ["DISPLAY"] = ":2"` and patches `pyautogui`'s internal Xlib display handle so subsequent Eye/Hand calls work against `:2` automatically.
-
-`wait()` blocks until the subprocess exits (Chrome closed, Ctrl+C, etc.) and handles `KeyboardInterrupt` by terminating the subprocess.
-
-This replaces `legacy_start.sh` / `legacy_kill.sh` entirely — no shell scripts needed.
-
-**Requires:** `Xvfb`, `google-chrome`, `x11vnc`, `tigervnc-viewer`.
+In Docker, `workspace.py --run` is started by `docker-start.sh` and runs as a background process for the lifetime of the container.
 
 ### `Eye` ([eye.py](eye.py))
 
-Captures the screen with `pyautogui.screenshot()` and finds all visible text elements using Tesseract OCR. To improve accuracy on varied UI backgrounds it runs three parallel OCR passes on different image variants:
+Takes a screenshot and asks a remote vision LLM to locate a UI element by description. Returns bounding box + center coordinates.
 
-- **enhanced** – contrast-boosted grayscale (CLAHE + unsharp mask)
-- **adaptive** – adaptive threshold for dark text on light backgrounds
-- **adaptive_inv** – inverted adaptive threshold for white text on dark/colored buttons
-
-Results from all three passes are deduplicated by proximity and merged into a single element list. Each element is a dict: `{"text": str, "x": int, "y": int, "w": int, "h": int}` where `x`/`y` is the center of the text bounding box.
-
-`view_screen()` accepts either:
-- `coords={"x": …, "y": …}` – returns the nearest text element to those coordinates
-- `search_keyword="…"` – returns the best-matching element containing that substring
-
-When `log_imgs=True`, annotated debug images are saved to `imgs/` for each OCR pass.
-
-**Requires:** `tesseract-ocr`, `tesseract-ocr-eng`, `tesseract-ocr-rus` (language pack), DejaVu fonts, active `DISPLAY`.
+- Model: `qwen2.5vl:7b` via Ollama (hosted on vast.ai)
+- Input: natural language query e.g. `"Submit button"`
+- Output: `{"bbox_2d": [...], "center": (cx, cy)}`
 
 ### `Hand` ([hand.py](hand.py))
 
-Controls the mouse and keyboard via `pyautogui`. Mouse movement uses a quadratic Bezier curve with a randomised control point and per-step delays to produce human-like motion.
+Controls mouse and keyboard:
+- `navigate(url)` — Ctrl+L → paste URL → Enter
+- `move(x, y)` — quadratic Bezier curve with randomised control point
+- `click(x, y)` — smooth move then click
+- `click_and_type(x, y, text)` — click then paste via `xclip` + Ctrl+V
+- `scroll(direction)` — up / down / left / right
 
-Methods:
-- `move(x, y)` – smooth Bezier move to `(x, y)`
-- `click(x, y)` – move then click
-- `paste(text)` – write text to clipboard via `xclip`, then `Ctrl+V`
-- `click_and_type(x, y, text)` – click then paste text
-- `scroll(direction, fraction)` – scroll by a fraction of the screen height/width
+### `agent.py` ([agent.py](agent.py))
 
-`pyautogui.FAILSAFE = True` is set: moving the mouse to the top-left corner raises an exception and aborts execution.
+LangGraph `StateGraph` with Claude claude-sonnet-4-6 as the reasoning model. Exposed as a FastAPI WebSocket server on port `8000`.
 
-**Requires:** `xclip`, active `DISPLAY`.
+**Tools available to the agent:**
 
-### `Memory` ([memory.py](memory.py))
+| Tool | Description |
+|---|---|
+| `navigate` | opens a URL |
+| `click` | Eye locates element → Hand clicks |
+| `type_text` | Eye locates element → Hand types |
+| `scroll` | scrolls the page |
+| `save_flow` | writes `flows/<name>.md` — a named procedure |
+| `read_flow` | reads a saved procedure |
+| `list_flows` | lists all saved procedures |
+| `ask_user` | **pauses the graph**, sends question to user, resumes on reply |
 
-Records human mouse clicks on an X11 display using the **X11 RECORD extension** (`python-xlib`). For each click it logs coordinates, button, timestamp, and optionally the nearest OCR text element (via an `on_click` callback passed at construction).
-
-Each click is handled in a background thread so OCR does not block the event stream. The running log is written to `record/log.json` after every click, sorted by click order.
-
-Call `memory.record()` to start listening; press `Ctrl+C` to stop.
-
-**Requires:** `python-xlib`, X11 display with RECORD extension enabled.
+**Flow memory** — procedures are stored as markdown files in `flows/`. The agent reads them before executing a task and rewrites them when the user corrects an error. The `flows/` directory is mounted as a Docker volume so memory persists across container restarts.
 
 ---
 
-## Prerequisites
+## Setup
 
-### System packages
+### 1. vast.ai — Ollama vision model
 
+Deploy a GPU instance on [vast.ai](https://vast.ai) with Ollama. Once running:
+
+**Get the token:**
 ```bash
-sudo apt install \
-  xvfb \
-  x11vnc \
-  tigervnc-viewer \
-  tesseract-ocr \
-  tesseract-ocr-eng \
-  tesseract-ocr-rus \
-  xclip \
-  fonts-dejavu \
-  python3-venv
+env | grep TOKEN
 ```
 
-Chrome (if not already installed):
-```bash
-wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-sudo apt install ./google-chrome-stable_current_amd64.deb
+**Get the public URL** from the instance logs — look for the cloudflare tunnel line:
+```
+[http://localhost:21434] 2026-03-08T09:12:15Z INF |  Your quick Tunnel has been created!
+# The public URL is the one printed just before or after this line
 ```
 
-### Python environment
+### 2. Environment variables
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+Create a `.env` file in the project root:
+```env
+ANTHROPIC_API_KEY=sk-ant-...
+OLLAMA_URL=https://<your-tunnel>.trycloudflare.com
+OLLAMA_TOKEN=<token from env | grep TOKEN>
 ```
 
-Python packages installed by `requirements.txt`:
+### 3. Run
 
-| Package | Used by |
-|---|---|
-| `opencv-python` | Eye — image preprocessing |
-| `numpy` | Eye — array operations |
-| `pytesseract` | Eye — Tesseract OCR wrapper |
-| `pyautogui` | Eye (screenshot), Hand (mouse/keyboard) |
-| `python-xlib` | Memory — X11 RECORD; Workspace — display patching |
-| `Pillow` | Eye — annotated debug image output |
+```bash
+docker compose up --build
+```
+
+- **Browser view:** http://localhost:6080 (redirects to `vnc.html`)
+- **Agent chat:** `ws://localhost:8000/ws`
+- **Quick CLI test:** `python chat.py`
+
+GPU passthrough (Intel/AMD) is enabled by default via `/dev/dri`. For NVIDIA, uncomment the block in [docker-compose.yml](docker-compose.yml).
 
 ---
 
 ## Usage
 
-`main.py` shows a minimal example: `Workspace` sets everything up, `Eye` finds UI elements by keyword, `Hand` interacts with them.
-
-```bash
-source .venv/bin/activate
-python main.py
+Connect to `ws://localhost:8000/ws` and send JSON messages:
+```json
+{"content": "go to amazon and search for mechanical keyboards"}
 ```
 
-No `DISPLAY` prefix needed — `Workspace.__init__` sets it automatically.
+The agent replies:
+```json
+{"role": "assistant", "content": "Done. Found 243 results..."}
+```
 
-To record human interactions to `record/log.json`:
+**Teaching the agent a flow:**
+```
+user: go to seller central, click Add product, fill title with "X", price with "Y", click Save
+sys:  done
+user: remember this as amazon_insert
+sys:  Flow 'amazon_insert' saved.
+```
 
-```python
-from workspace import Workspace
-from eye import Eye
-from memory import Memory
-
-workspace = Workspace(url="https://example.com")
-eye = Eye(log_imgs=True, display=":2")
-memory = Memory(on_click=lambda x, y: eye.view_screen(coords={"x": x, "y": y})["nearest"])
-memory.record()   # blocks until Ctrl+C
-workspace.wait()
+**Running a batch:**
+```
+user: here are 50 products to insert: [...]
+sys:  inserted 1/50... 2/50...
+sys:  error on 12/50 — duplicate ASIN detected, what should I do?
+user: skip duplicates and log them
+sys:  ok, updating flow...
+sys:  inserted 13/50...
 ```
 
 ---
 
 ## Notes
 
-- Virtual display runs on `:2` to avoid conflicts with your main display (`:0`).
-- Chrome profile is stored in `~/.config/chrome-virtual` (separate from your main profile).
-- VNC viewer opens automatically at `localhost:5900` (no password).
-- Debug OCR images are saved to `imgs/` when `log_imgs=True` (gitignored).
-- Click logs are saved to `record/log.json` (gitignored).
-- No root/sudo required after the initial `apt install`.
-- `legacy_start.sh` / `legacy_kill.sh` are the old shell-script equivalents of `Workspace` — kept for reference.
+- Chrome profile stored at `~/.config/chrome-virtual` inside the container.
+- `flows/` is mounted as a volume — procedures survive container restarts.
+- No `--no-sandbox` or bot flags — Chrome runs as a non-root user with full sandbox.
