@@ -3,7 +3,7 @@ python-xlib
 Pillow
 requests
 langgraph
-langchain-anthropic
+langchain_openai
 langchain-core
 fastapi
 uvicorn[standard]

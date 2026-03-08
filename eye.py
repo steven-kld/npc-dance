@@ -32,7 +32,7 @@ class Eye:
         self,
         ollama_url: str,
         token: str,
-        model: str = "qwen2.5vl:7b",
+        model: str = "qwen3-vl:8b",
         system_prompt: str = SYSTEM_PROMPT,
         timeout: int = 600,
     ):
@@ -117,8 +117,11 @@ class Eye:
 
         if "bbox_2d" in parsed:
             x1, y1, x2, y2 = parsed["bbox_2d"]
-            x1, x2 = int(x1 * scale_x), int(x2 * scale_x)
-            y1, y2 = int(y1 * scale_y), int(y2 * scale_y)
+            # Qwen-VL returns coords in 0-1000 normalized space, scale to real pixels
+            x1 = int(x1 / 1000 * real_w)
+            y1 = int(y1 / 1000 * real_h)
+            x2 = int(x2 / 1000 * real_w)
+            y2 = int(y2 / 1000 * real_h)
             cx = (x1 + x2) // 2
             cy = (y1 + y2) // 2
             print(f"[Eye] found '{parsed.get('label','')}' center=({cx},{cy})")

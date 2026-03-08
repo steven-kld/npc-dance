@@ -5,7 +5,7 @@ import websockets
 async def main():
     uri = "ws://localhost:8000/ws"
     print(f"Connecting to {uri}...")
-    async with websockets.connect(uri) as ws:
+    async with websockets.connect(uri, ping_interval=None) as ws:
         print("Connected. Type your message and press Enter. Ctrl+C to exit.\n")
         while True:
             msg = input("you: ").strip()

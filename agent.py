@@ -1,10 +1,24 @@
 import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Annotated
 
+LOG_FILE = Path(__file__).parent / "agent.log"
+LOG_FILE.write_text("")  # clear on each startup
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler(),
+    ],
+)
+log = logging.getLogger("agent")
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
@@ -30,15 +44,18 @@ _eye = Eye(
 _eye.warmup()
 _hand = Hand()
 
-SYSTEM_PROMPT = """You are a browser automation agent controlling a real Chrome browser.
+SYSTEM_PROMPT = """/no_think
+You are a browser automation agent controlling a real Chrome browser.
 
-Guidelines:
+Rules:
+- Call tools immediately. No clarification questions.
+- After completing the user's request, respond with exactly "OK" and nothing else.
+- If something failed or you could not complete the task, respond with a single short sentence describing the issue.
+- Never respond with anything else — no acknowledgments, no explanations, just "OK" or the issue.
+- "scroll down" = call scroll ONCE, then output OK. STOP. Do NOT scroll again.
+- Only keep scrolling if the user said "scroll until you find X" — in that case scroll, try click("X"), repeat ONLY if not found.
 - Before starting a task, call list_flows then read_flow if a relevant one exists.
 - When the user asks to "remember" or "save" a procedure, use save_flow.
-- When an error occurs that you cannot self-correct, call ask_user to pause and get instructions.
-- After receiving error-handling instructions, update the flow with save_flow before resuming.
-- For batch tasks (many items), process sequentially and report progress after each item.
-- After ask_user returns an answer, incorporate it and continue — do not ask again for the same issue.
 """
 
 
@@ -72,10 +89,11 @@ def type_text(query: str, text: str) -> str:
 
 
 @tool
-def scroll(direction: str = "down") -> str:
-    """Scroll the page. direction: up | down | left | right"""
-    _hand.scroll(direction)
-    return f"Scrolled {direction}"
+def scroll(direction: str = "down", times: int = 1) -> str:
+    """Scroll the page. direction: up | down | left | right. times: how many scroll steps (default 1)."""
+    for _ in range(max(1, times)):
+        _hand.scroll(direction)
+    return f"Scrolled {direction} x{times}"
 
 
 @tool
@@ -108,9 +126,11 @@ def ask_user(question: str) -> str:
 TOOLS = [navigate, click, type_text, scroll,
          save_flow, read_flow, list_flows, ask_user]
 
-llm = ChatAnthropic(
-    model="claude-sonnet-4-6",
-    api_key=os.environ["ANTHROPIC_API_KEY"],
+llm = ChatOpenAI(
+    model="qwen3:8b",
+    base_url=f"{os.environ['OLLAMA_URL']}/v1",
+    api_key=os.environ["OLLAMA_TOKEN"],
+    extra_body={"options": {"think": False}},
 ).bind_tools(TOOLS)
 
 
@@ -120,7 +140,12 @@ class State(TypedDict):
 
 def agent_node(state: State):
     msgs = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
-    return {"messages": [llm.invoke(msgs)]}
+    response = llm.invoke(msgs)
+    if response.content:
+        log.info(f"[thought] {response.content}")
+    for call in getattr(response, "tool_calls", []):
+        log.info(f"[tool_call] {call['name']}({call['args']})")
+    return {"messages": [response]}
 
 
 _builder = StateGraph(State)
@@ -134,9 +159,16 @@ agent = _builder.compile(checkpointer=MemorySaver())
 app = FastAPI()
 
 
+@app.get("/log")
+async def get_log():
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(LOG_FILE.read_text())
+
+
 @app.websocket("/ws")
 async def chat(ws: WebSocket):
     await ws.accept()
+    log.info("CHAT CONNECTION")
     config = {"configurable": {"thread_id": str(id(ws))}}
     loop = asyncio.get_running_loop()
 
@@ -144,6 +176,7 @@ async def chat(ws: WebSocket):
         while True:
             data = await ws.receive_json()
             user_text = data.get("content", "")
+            log.info(f"[user] {user_text}")
 
             # If graph is paused on an interrupt, resume with user's answer
             state = agent.get_state(config)
@@ -177,4 +210,4 @@ async def chat(ws: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, ws_ping_interval=None)

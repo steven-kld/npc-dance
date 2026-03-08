@@ -30,7 +30,7 @@ class Hand:
 
     def click_and_type(self, x: int, y: int, text: str) -> None:
         self.click(x, y)
-        time.sleep(0.05)
+        time.sleep(0.2)
         self.paste(text)
 
     def navigate(self, url: str) -> None:
@@ -51,4 +51,4 @@ class Hand:
         else:
             clicks = max(1, int(w * fraction / 30))
             pyautogui.hscroll(-clicks if direction == "right" else clicks)
-        time.sleep(0.05)
+        time.sleep(0.2)

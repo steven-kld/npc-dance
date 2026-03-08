@@ -10,12 +10,12 @@ A chat-driven browser automation agent. Talk to it in natural language — it co
 User (WebSocket chat)
     │
     ▼
-agent.py ── LangGraph agent loop (Claude claude-sonnet-4-6)
+agent.py ── LangGraph agent loop (qwen3:8b via Ollama)
     │            ├── navigate / click / type / scroll / screenshot
     │            ├── save_flow / read_flow / list_flows   ← persistent memory
     │            └── ask_user                             ← pauses, asks, resumes
     │
-    ├──► Eye (eye.py) ── screenshot → Ollama qwen2.5vl:7b → element coordinates
+    ├──► Eye (eye.py) ── screenshot → Ollama qwen3-vl:8b → element coordinates (0-1000 → pixels)
     │
     └──► Hand (hand.py) ── Bezier mouse movement, xclip paste, keyboard
 
@@ -40,9 +40,10 @@ In Docker, `workspace.py --run` is started by `docker-start.sh` and runs as a ba
 
 Takes a screenshot and asks a remote vision LLM to locate a UI element by description. Returns bounding box + center coordinates.
 
-- Model: `qwen2.5vl:7b` via Ollama (hosted on vast.ai)
+- Model: `qwen3-vl:8b` via Ollama (hosted on vast.ai)
 - Input: natural language query e.g. `"Submit button"`
 - Output: `{"bbox_2d": [...], "center": (cx, cy)}`
+- Coordinates returned by the model are in 0–1000 normalized space and scaled to real screen pixels
 
 ### `Hand` ([hand.py](hand.py))
 
@@ -55,7 +56,11 @@ Controls mouse and keyboard:
 
 ### `agent.py` ([agent.py](agent.py))
 
-LangGraph `StateGraph` with Claude claude-sonnet-4-6 as the reasoning model. Exposed as a FastAPI WebSocket server on port `8000`.
+LangGraph `StateGraph` with `qwen3:8b` (via Ollama on vast.ai) as the reasoning model. Exposed as a FastAPI WebSocket server on port `8000`.
+
+- Thinking mode disabled (`/no_think`) for faster responses
+- Agent responds with `"OK"` on success or a short error sentence on failure
+- Logs all user messages, tool calls, and thoughts to `agent.log` (cleared on startup), readable at `http://localhost:8000/log`
 
 **Tools available to the agent:**
 
@@ -74,14 +79,30 @@ LangGraph `StateGraph` with Claude claude-sonnet-4-6 as the reasoning model. Exp
 
 ---
 
+## Hardware requirements (vast.ai GPU)
+
+| | GPU | VRAM |
+|---|---|---|
+| **Minimum** | RTX 3080 Ti / 4070 Ti | 12 GB |
+| **Recommended** | RTX 3090 / 4090 / A10G | 24 GB |
+
+Both models (`qwen3-vl:8b` ~6 GB + `qwen3:8b` ~5.5 GB) stay loaded simultaneously, totalling ~12 GB VRAM.
+
+---
+
 ## Setup
 
-### 1. vast.ai — Ollama vision model
+### 1. vast.ai — Ollama GPU instance
 
 Deploy a GPU instance on [vast.ai](https://vast.ai) with Ollama. Once running:
 
 **Get the token:**
 ```bash
+ollama pull qwen3-vl:8b
+ollama pull qwen3:8b
+# verify
+ollama list
+# get token
 env | grep TOKEN
 ```
 
@@ -95,7 +116,6 @@ env | grep TOKEN
 
 Create a `.env` file in the project root:
 ```env
-ANTHROPIC_API_KEY=sk-ant-...
 OLLAMA_URL=https://<your-tunnel>.trycloudflare.com
 OLLAMA_TOKEN=<token from env | grep TOKEN>
 ```
@@ -108,6 +128,7 @@ docker compose up --build
 
 - **Browser view:** http://localhost:6080 (redirects to `vnc.html`)
 - **Agent chat:** `ws://localhost:8000/ws`
+- **Agent log:** http://localhost:8000/log
 - **Quick CLI test:** `python chat.py`
 
 GPU passthrough (Intel/AMD) is enabled by default via `/dev/dri`. For NVIDIA, uncomment the block in [docker-compose.yml](docker-compose.yml).
@@ -121,27 +142,20 @@ Connect to `ws://localhost:8000/ws` and send JSON messages:
 {"content": "go to amazon and search for mechanical keyboards"}
 ```
 
-The agent replies:
-```json
-{"role": "assistant", "content": "Done. Found 243 results..."}
-```
+The agent replies `"OK"` on success or a short error sentence if something failed.
 
 **Teaching the agent a flow:**
 ```
 user: go to seller central, click Add product, fill title with "X", price with "Y", click Save
-sys:  done
+sys:  OK
 user: remember this as amazon_insert
-sys:  Flow 'amazon_insert' saved.
+sys:  OK
 ```
 
 **Running a batch:**
 ```
 user: here are 50 products to insert: [...]
-sys:  inserted 1/50... 2/50...
-sys:  error on 12/50 — duplicate ASIN detected, what should I do?
-user: skip duplicates and log them
-sys:  ok, updating flow...
-sys:  inserted 13/50...
+sys:  OK (x50, with ask_user pausing on errors)
 ```
 
 ---

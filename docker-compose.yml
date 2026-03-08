@@ -11,12 +11,12 @@ services:
       - /dev/dri:/dev/dri  # GPU passthrough for Intel / AMD
     environment:
       - NO_VNCVIEWER=1
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OLLAMA_URL=${OLLAMA_URL}
       - OLLAMA_TOKEN=${OLLAMA_TOKEN}
     volumes:
       - ./flows:/home/npc/app/flows   # persist flow memory on host
       - ./result.jpg:/home/npc/app/result.jpg
+      - ./agent.log:/home/npc/app/agent.log
 
 # NVIDIA GPU: uncomment and run with: docker compose --profile nvidia up
 #
