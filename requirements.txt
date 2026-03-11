@@ -8,3 +8,4 @@ langchain-core
 fastapi
 uvicorn[standard]
 websockets
+openai

@@ -41,14 +41,15 @@ class Hand:
         pyautogui.press("enter")
         time.sleep(2)
 
-    def scroll(self, direction: str = "down", fraction: float = 0.05) -> None:
+    def scroll(self, direction: str = "down", fraction: float = 0.1) -> None:
         w, h = pyautogui.size()
         pyautogui.moveTo(w // 2, h // 2)
-        time.sleep(0.02)
+        time.sleep(0.1)
         if direction in ("down", "up"):
             clicks = max(1, int(h * fraction / 30))
             pyautogui.scroll(-clicks if direction == "down" else clicks)
         else:
             clicks = max(1, int(w * fraction / 30))
             pyautogui.hscroll(-clicks if direction == "right" else clicks)
-        time.sleep(0.2)
+        time.sleep(0.3)
+        

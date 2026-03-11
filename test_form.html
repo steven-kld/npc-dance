@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Employee Card</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Arial, sans-serif;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 0 20px;
+      color: #222;
+      background: #f9fafb;
+    }
+
+    h2, #form-view, #result-view {
+      width: 800px;
+    }
+
+    h2 {
+      font-size: 20px;
+      border-bottom: 2px solid #d1d5db;
+      padding-bottom: 10px;
+      margin-bottom: 18px;
+    }
+
+    /* ── FORM VIEW ─────────────────────────────── */
+    #form-view { display: flex; flex-direction: column; flex: 1; }
+
+    .columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0 60px;
+      flex: 1;
+    }
+
+    .field { margin-bottom: 11px; }
+
+    .field label {
+      display: block;
+      font-size: 12px;
+      color: #6b7280;
+      margin-bottom: 3px;
+    }
+
+    .field input,
+    .field select {
+      width: 100%;
+      padding: 7px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 4px;
+      font-size: 14px;
+      background: #fff;
+    }
+
+    .field input:focus,
+    .field select:focus {
+      outline: 2px solid #2563eb;
+      border-color: transparent;
+    }
+
+    /* ── RESULT VIEW ───────────────────────────── */
+    #result-view { display: none; flex-direction: column; flex: 1; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 2px 16px;
+      border: 1px solid #e5e7eb;
+      text-align: left;
+      line-height: 1.4;
+    }
+
+    th:first-child, td:first-child { width: 30%; }
+    th:last-child,  td:last-child  { width: 70%; }
+    th { background: #f3f4f6; font-weight: 600; color: #374151; }
+    tr:nth-child(even) td { background: #fafafa; }
+
+    /* ── SHARED FOOTER ─────────────────────────── */
+    .footer {
+      text-align: center;
+      margin-top: 20px;
+    }
+
+    button {
+      background: #dddddd;
+      color: #080808;
+      border: none;
+      padding: 10px 36px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button:hover { background: #ffffff; }
+    button.secondary { background: #6b7280; }
+    button.secondary:hover { background: #4b5563; }
+  </style>
+</head>
+<body>
+
+<h2>European Bank Transfer</h2>
+
+<!-- FORM -->
+<div id="form-view">
+  <form id="form">
+    <div class="columns">
+
+      <div>
+        <div class="field">
+          <label for="full_name">Full Name</label>
+          <input type="text" id="full_name" name="full_name" placeholder="John Robert Smith">
+        </div>
+        <div class="field">
+          <label for="iban">IBAN</label>
+          <input type="text" id="iban" name="iban" placeholder="DE89 3704 0044 0532 0130 00">
+        </div>
+        <div class="field">
+          <label for="bic">BIC / SWIFT</label>
+          <input type="text" id="bic" name="bic" placeholder="COBADEFFXXX">
+        </div>
+        <div class="field">
+          <label for="intermediary_bank">Intermediary BIC</label>
+          <input type="text" id="intermediary_bank" name="intermediary_bank" placeholder="DEUTDEFFXXX">
+        </div>
+        <div class="field">
+          <label for="full_address">Full Address</label>
+          <input type="text" id="full_address" name="full_address" placeholder="Friedrichstr. 1, 10117 Berlin, Germany">
+        </div>
+      </div>
+
+      <div>
+        <div class="field">
+          <label for="amount">Amount</label>
+          <input type="number" id="amount" name="amount" placeholder="15000.00" step="0.01">
+        </div>
+        <div class="field">
+          <label for="currency">Currency</label>
+          <select id="currency" name="currency">
+            <option value="">— select —</option>
+            <option value="EUR">EUR — Euro</option>
+            <option value="USD">USD — US Dollar</option>
+            <option value="GBP">GBP — British Pound</option>
+            <option value="CHF">CHF — Swiss Franc</option>
+            <option value="PLN">PLN — Polish Zloty</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="payment_method">Payment Method</label>
+          <select id="payment_method" name="payment_method">
+            <option value="">— select —</option>
+            <option value="sepa">SEPA</option>
+            <option value="swift">SWIFT</option>
+            <option value="instant">Instant</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="due_date">Due Date</label>
+          <input type="text" id="due_date" name="due_date" placeholder="2026-03-01">
+        </div>
+        <div class="field">
+          <label for="description">Description</label>
+          <input type="text" id="description" name="description" placeholder="Invoice #2024-042, services rendered">
+        </div>
+      </div>
+
+    </div>
+    <div class="footer">
+      <button type="submit">Submit</button>
+    </div>
+  </form>
+</div>
+
+<!-- RESULT -->
+<div id="result-view">
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Value</th></tr>
+    </thead>
+    <tbody id="result-body"></tbody>
+  </table>
+  <div class="footer">
+    <button id="add-more">Add one more</button>
+  </div>
+</div>
+
+<script>
+  const LABELS = {
+    full_name:        'Full Name',
+    iban:             'IBAN',
+    bic:              'BIC / SWIFT',
+    intermediary_bank:'Intermediary BIC',
+    full_address:     'Full Address',
+    amount:           'Amount',
+    currency:         'Currency',
+    payment_method:   'Payment Method',
+    due_date:         'Due Date',
+    description:      'Description',
+  };
+
+  let lastData = {};
+
+  document.getElementById('form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const data = new FormData(e.target);
+    lastData = Object.fromEntries(data);
+
+    const tbody = document.getElementById('result-body');
+    tbody.innerHTML = '';
+    data.forEach((val, key) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${LABELS[key] ?? key}</td><td>${val || '—'}</td>`;
+      tbody.appendChild(tr);
+    });
+
+    document.getElementById('form-view').style.display = 'none';
+    document.getElementById('result-view').style.display = 'flex';
+  });
+
+  document.getElementById('add-more').addEventListener('click', function() {
+    document.getElementById('form').reset();
+    document.getElementById('result-view').style.display = 'none';
+    document.getElementById('form-view').style.display = 'flex';
+  });
+</script>
+
+</body>
+</html>

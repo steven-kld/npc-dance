@@ -1,10 +1,21 @@
 import base64
 import os
 import time
-import requests
 import json
 from io import BytesIO
 from PIL import Image
+from openai import OpenAI
+
+BEDROCK_BASE_URL = "https://bedrock-mantle.us-east-1.api.aws/v1"
+BEDROCK_MODEL = "qwen.qwen3-vl-235b-a22b-instruct"
+
+SYSTEM_PROMPT = """You are a UI element detector. Analyze the screenshot and locate the requested element.
+Respond ONLY with a valid JSON object, no explanation, no markdown, no backticks.
+Use exactly one of these 2 formats:
+1. Element clearly found:
+{"bbox_2d": [x1, y1, x2, y2], "label": "element name"}
+2. Not found:
+{"info": <str>}"""
 
 
 def take_screenshot() -> Image.Image:
@@ -18,29 +29,17 @@ def take_screenshot() -> Image.Image:
     d.close()
     return img.convert("RGB")
 
-SYSTEM_PROMPT = """You are a UI element detector. Analyze the screenshot and locate the requested element.
-Respond ONLY with a valid JSON object, no explanation, no markdown, no backticks.
-Use exactly one of these 2 formats:
-1. Element clearly found:
-{"bbox_2d": [x1, y1, x2, y2], "label": "element name"}
-2. Not found:
-{"info": <str>}"""
-
 
 class Eye:
     def __init__(
         self,
-        ollama_url: str,
-        token: str,
-        model: str = "qwen3-vl:8b",
+        api_key: str,
+        model: str = BEDROCK_MODEL,
         system_prompt: str = SYSTEM_PROMPT,
-        timeout: int = 600,
     ):
-        self.ollama_url = ollama_url
-        self.token = token
         self.model = model
         self.system_prompt = system_prompt
-        self.timeout = timeout
+        self.client = OpenAI(base_url=BEDROCK_BASE_URL, api_key=api_key)
 
     def _screenshot_b64(self) -> tuple[str, int, int, int, int]:
         img = take_screenshot()
@@ -54,60 +53,36 @@ class Eye:
         return b64, target_w, target_h, real_w, real_h
 
     def warmup(self) -> None:
-        print("[Eye] warming up model...")
-        t0 = time.time()
-        response = requests.post(
-            f"{self.ollama_url}/api/chat",
-            headers={
-                "X-Requested-With": "XMLHttpRequest",
-                "Authorization": f"Bearer {self.token}",
-            },
-            json={
-                "model": self.model,
-                "stream": False,
-                "messages": [{"role": "user", "content": "hi", "images": []}],
-            },
-            timeout=self.timeout,
-        )
-        if response.status_code != 200:
-            raise RuntimeError(f"API error {response.status_code}: {response.text}")
-
-        print(f"[Eye] model ready ({time.time() - t0:.2f}s)")
+        print("[Eye] Bedrock Eye ready (no warmup needed)")
 
     def locate(self, query: str) -> dict:
         print(f"[Eye] locate: '{query}'")
         t0 = time.time()
 
         image_b64, w, h, real_w, real_h = self._screenshot_b64()
-        scale_x = real_w / w
-        scale_y = real_h / h
 
-        print(f"[Eye] calling API ({w}*{h} px)...")
-        response = requests.post(
-            f"{self.ollama_url}/api/chat",
-            headers={
-                "X-Requested-With": "XMLHttpRequest",
-                "Authorization": f"Bearer {self.token}",
-            },
-            json={
-                "model": self.model,
-                "stream": False,
-                "messages": [
-                    {"role": "system", "content": self.system_prompt},
-                    {
-                        "role": "user",
-                        "content": f"The image is {w}*{h} pixels. Locate: {query}",
-                        "images": [image_b64],
-                    },
-                ],
-            },
-            timeout=self.timeout,
+        print(f"[Eye] calling Bedrock API ({w}x{h} px)...")
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": self.system_prompt},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                        },
+                        {
+                            "type": "text",
+                            "text": f"The image is {w}x{h} pixels. Locate: {query}",
+                        },
+                    ],
+                },
+            ],
         )
 
-        if response.status_code != 200:
-            raise RuntimeError(f"API error {response.status_code}: {response.text}")
-
-        raw = response.json()["message"]["content"]
+        raw = response.choices[0].message.content
         print(f"[Eye] response: {raw} ({time.time() - t0:.2f}s)")
 
         try:

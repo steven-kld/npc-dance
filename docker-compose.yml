@@ -11,8 +11,7 @@ services:
       - /dev/dri:/dev/dri  # GPU passthrough for Intel / AMD
     environment:
       - NO_VNCVIEWER=1
-      - OLLAMA_URL=${OLLAMA_URL}
-      - OLLAMA_TOKEN=${OLLAMA_TOKEN}
+      - AWS_BEARER_TOKEN_BEDROCK=${AWS_BEARER_TOKEN_BEDROCK}
     volumes:
       - ./flows:/home/npc/app/flows   # persist flow memory on host
       - ./result.jpg:/home/npc/app/result.jpg

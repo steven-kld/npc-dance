@@ -37,10 +37,7 @@ FLOWS_DIR.mkdir(exist_ok=True)
 
 connect()
 
-_eye = Eye(
-    ollama_url=os.environ["OLLAMA_URL"],
-    token=os.environ["OLLAMA_TOKEN"],
-)
+_eye = Eye(api_key=os.environ["AWS_BEARER_TOKEN_BEDROCK"])
 _eye.warmup()
 _hand = Hand()
 
@@ -127,10 +124,9 @@ TOOLS = [navigate, click, type_text, scroll,
          save_flow, read_flow, list_flows, ask_user]
 
 llm = ChatOpenAI(
-    model="qwen3:8b",
-    base_url=f"{os.environ['OLLAMA_URL']}/v1",
-    api_key=os.environ["OLLAMA_TOKEN"],
-    extra_body={"options": {"think": False}},
+    model="deepseek.v3.2",
+    base_url="https://bedrock-mantle.us-east-1.api.aws/v1",
+    api_key=os.environ["AWS_BEARER_TOKEN_BEDROCK"],
 ).bind_tools(TOOLS)
 
 
@@ -157,6 +153,13 @@ _builder.add_edge("tools", "agent")
 agent = _builder.compile(checkpointer=MemorySaver())
 
 app = FastAPI()
+
+
+@app.get("/demo")
+async def demo():
+    from fastapi.responses import HTMLResponse
+    html = (Path(__file__).parent / "test_form.html").read_text()
+    return HTMLResponse(html)
 
 
 @app.get("/log")
