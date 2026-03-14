@@ -3,11 +3,12 @@ import os
 import time
 import json
 from io import BytesIO
-from PIL import Image
+from pathlib import Path
+from PIL import Image, ImageDraw
 from openai import OpenAI
 
-BEDROCK_BASE_URL = "https://bedrock-mantle.us-east-1.api.aws/v1"
-BEDROCK_MODEL = "qwen.qwen3-vl-235b-a22b-instruct"
+TOGETHER_BASE_URL = "https://api.together.xyz/v1"
+TOGETHER_MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 
 SYSTEM_PROMPT = """You are a UI element detector. Analyze the screenshot and locate the requested element.
 Respond ONLY with a valid JSON object, no explanation, no markdown, no backticks.
@@ -33,13 +34,16 @@ def take_screenshot() -> Image.Image:
 class Eye:
     def __init__(
         self,
-        api_key: str,
-        model: str = BEDROCK_MODEL,
+        api_key: str,                      # pass os.environ["TOGETHER_API_KEY"]
+        model: str = TOGETHER_MODEL,
         system_prompt: str = SYSTEM_PROMPT,
     ):
         self.model = model
         self.system_prompt = system_prompt
-        self.client = OpenAI(base_url=BEDROCK_BASE_URL, api_key=api_key)
+        self.client = OpenAI(
+            base_url=TOGETHER_BASE_URL,
+            api_key=api_key,
+        )
 
     def _screenshot_b64(self) -> tuple[str, int, int, int, int]:
         img = take_screenshot()
@@ -52,8 +56,18 @@ class Eye:
         print(f"[Eye] screenshot {real_w}x{real_h} → {target_w}x{target_h} ({len(b64)//1024}kb)")
         return b64, target_w, target_h, real_w, real_h
 
+    def _save_result(self, image_b64: str, w: int, h: int, x1: int, y1: int, x2: int, y2: int, label: str) -> None:
+        img = Image.open(BytesIO(base64.b64decode(image_b64)))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
+        if label:
+            draw.text((x1, max(0, y1 - 14)), label, fill="red")
+        out = Path("/tmp/result.png")
+        img.save(out)
+        print(f"[Eye] saved {out}")
+
     def warmup(self) -> None:
-        print("[Eye] Bedrock Eye ready (no warmup needed)")
+        print("[Eye] Together AI Eye ready (no warmup needed — serverless stays warm)")
 
     def locate(self, query: str) -> dict:
         print(f"[Eye] locate: '{query}'")
@@ -61,7 +75,7 @@ class Eye:
 
         image_b64, w, h, real_w, real_h = self._screenshot_b64()
 
-        print(f"[Eye] calling Bedrock API ({w}x{h} px)...")
+        print(f"[Eye] calling Together AI API ({w}x{h} px)...")
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -75,7 +89,7 @@ class Eye:
                         },
                         {
                             "type": "text",
-                            "text": f"The image is {w}x{h} pixels. Locate: {query}",
+                            "text": f"The image is {w}*{h} pixels. Locate: {query}",
                         },
                     ],
                 },
@@ -85,6 +99,10 @@ class Eye:
         raw = response.choices[0].message.content
         print(f"[Eye] response: {raw} ({time.time() - t0:.2f}s)")
 
+        # Together AI / Qwen3-VL may wrap response in <think>...</think> tags — strip them
+        if "<think>" in raw:
+            raw = raw.split("</think>")[-1].strip()
+
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
@@ -92,6 +110,7 @@ class Eye:
 
         if "bbox_2d" in parsed:
             x1, y1, x2, y2 = parsed["bbox_2d"]
+            print(f"[Eye] raw bbox: x1={x1} y1={y1} x2={x2} y2={y2} (img {w}x{h})")
             # Qwen-VL returns coords in 0-1000 normalized space, scale to real pixels
             x1 = int(x1 / 1000 * real_w)
             y1 = int(y1 / 1000 * real_h)
@@ -100,6 +119,7 @@ class Eye:
             cx = (x1 + x2) // 2
             cy = (y1 + y2) // 2
             print(f"[Eye] found '{parsed.get('label','')}' center=({cx},{cy})")
+            self._save_result(image_b64, w, h, x1, y1, x2, y2, parsed.get("label", ""))
             return {**parsed, "bbox_2d": [x1, y1, x2, y2], "center": (cx, cy)}
 
         print(f"[Eye] not found: {parsed}")

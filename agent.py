@@ -37,7 +37,7 @@ FLOWS_DIR.mkdir(exist_ok=True)
 
 connect()
 
-_eye = Eye(api_key=os.environ["AWS_BEARER_TOKEN_BEDROCK"])
+_eye = Eye(api_key=os.environ["TOGETHER_AI_API_KEY"])
 _eye.warmup()
 _hand = Hand()
 
@@ -45,6 +45,7 @@ SYSTEM_PROMPT = """/no_think
 You are a browser automation agent controlling a real Chrome browser.
 
 Rules:
+- A website is ALWAYS already open in the browser. NEVER ask for a URL before acting.
 - Call tools immediately. No clarification questions.
 - After completing the user's request, respond with exactly "OK" and nothing else.
 - If something failed or you could not complete the task, respond with a single short sentence describing the issue.
@@ -124,9 +125,9 @@ TOOLS = [navigate, click, type_text, scroll,
          save_flow, read_flow, list_flows, ask_user]
 
 llm = ChatOpenAI(
-    model="deepseek.v3.2",
-    base_url="https://bedrock-mantle.us-east-1.api.aws/v1",
-    api_key=os.environ["AWS_BEARER_TOKEN_BEDROCK"],
+    model="deepseek-ai/DeepSeek-V3.1",
+    base_url="https://api.together.xyz/v1",
+    api_key=os.environ["TOGETHER_AI_API_KEY"],
 ).bind_tools(TOOLS)
 
 
@@ -166,6 +167,15 @@ async def demo():
 async def get_log():
     from fastapi.responses import PlainTextResponse
     return PlainTextResponse(LOG_FILE.read_text())
+
+
+@app.get("/img-log")
+async def img_log():
+    from fastapi.responses import FileResponse, Response
+    p = Path("/tmp/result.png")
+    if not p.exists():
+        return Response(status_code=404, content="No result.png yet")
+    return FileResponse(p, media_type="image/png")
 
 
 @app.websocket("/ws")

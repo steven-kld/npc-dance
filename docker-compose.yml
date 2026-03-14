@@ -11,7 +11,7 @@ services:
       - /dev/dri:/dev/dri  # GPU passthrough for Intel / AMD
     environment:
       - NO_VNCVIEWER=1
-      - AWS_BEARER_TOKEN_BEDROCK=${AWS_BEARER_TOKEN_BEDROCK}
+      - TOGETHER_AI_API_KEY=${TOGETHER_AI_API_KEY}
     volumes:
       - ./flows:/home/npc/app/flows   # persist flow memory on host
       - ./result.jpg:/home/npc/app/result.jpg
