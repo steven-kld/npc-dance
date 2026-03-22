@@ -103,17 +103,23 @@ class Eye:
             return {"error": raw}
 
         if "bbox_2d" in parsed:
-            x1, y1, x2, y2 = parsed["bbox_2d"]
-            print(f"[Eye] raw bbox: x1={x1} y1={y1} x2={x2} y2={y2} (img {w}x{h})")
-            # Qwen-VL returns coords in 0-1000 normalized space, scale to real pixels
-            x1 = int(x1 / 1000 * real_w)
-            y1 = int(y1 / 1000 * real_h)
-            x2 = int(x2 / 1000 * real_w)
-            y2 = int(y2 / 1000 * real_h)
+            rx1, ry1, rx2, ry2 = parsed["bbox_2d"]
+            print(f"[Eye] raw bbox: x1={rx1} y1={ry1} x2={rx2} y2={ry2} (img {w}x{h})")
+            # Qwen-VL returns coords in 0-1000 normalized space
+            # Scale to real pixels for clicking
+            x1 = int(rx1 / 1000 * real_w)
+            y1 = int(ry1 / 1000 * real_h)
+            x2 = int(rx2 / 1000 * real_w)
+            y2 = int(ry2 / 1000 * real_h)
             cx = (x1 + x2) // 2
             cy = (y1 + y2) // 2
             print(f"[Eye] found '{parsed.get('label','')}' center=({cx},{cy})")
-            self._save_result(image_b64, w, h, x1, y1, x2, y2, parsed.get("label", ""))
+            # Scale to image pixels for drawing (image is w x h, not real_w x real_h)
+            dx1 = int(rx1 / 1000 * w)
+            dy1 = int(ry1 / 1000 * h)
+            dx2 = int(rx2 / 1000 * w)
+            dy2 = int(ry2 / 1000 * h)
+            self._save_result(image_b64, w, h, dx1, dy1, dx2, dy2, parsed.get("label", ""))
             return {**parsed, "bbox_2d": [x1, y1, x2, y2], "center": (cx, cy)}
 
         print(f"[Eye] not found: {parsed}")

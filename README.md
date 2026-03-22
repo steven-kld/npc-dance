@@ -12,11 +12,9 @@ User (WebSocket chat / make chat)
     ▼
 agent.py - LangGraph agent (DeepSeek-V3.1 via Together AI)
     │   ├── find_flow      - matches user intent to a flow in flows.json
-    │   ├── prepare_flow   - parses input, shows field preview, flags missing data
-    │   └── run_flow       - excutes on user confirmation
-    │
-    ├──► Eye (eye.py) - screenshot → Qwen3-VL-8B (Together AI) → element coordinates
-    │
+    │   ├── prepare_flow   - parses input, previews fields, flags missing data
+    │   └── run_flow       - executes on user confirmation
+    ├──► Eye (eye.py) - screenshot → Qwen3-VL-8B (Together AI) → coord
     └──► Hand (hand.py) - Bezier mouse movement, xclip paste, keyboard
 
 Workspace (workspace.py) - Xvfb :2 + Chrome + x11vnc
@@ -27,12 +25,17 @@ noVNC - watch the browser at http://localhost:6080
 
 ## Components
 
-### `agent.py`
+### `server.py`
 
-FastAPI app with a LangGraph agent loop. Exposed as:
+FastAPI app. Exposed as:
 - `ws://localhost:8000/ws` - WebSocket chat
 - `http://localhost:8000/log` - live agent log
 - `http://localhost:8000/img-log` - last Eye screenshot with bbox overlay
+- `http://localhost:8000/demo` - dummy input form for testing
+
+### `agent.py`
+
+LangGraph agent graph (DeepSeek-V3.1 via Together AI). Invoked by `server.py` for each WebSocket message.
 
 **Agent tools:**
 
@@ -53,6 +56,10 @@ Multiple records are supported - send them one per line, all in one message.
 ### `flow_instruction.py`
 
 Takes a flow definition + raw user input string, calls DeepSeek to extract field values into the flow's `input_schema`, and returns a `FlowInstruction` with rendered steps ready to execute.
+
+- Retries up to 3 times on `APIConnectionError` (exponential backoff, 2–10s)
+- Values like `none`, `null`, `n/a` are treated as empty
+- Steps that reference an empty optional field are silently skipped
 
 ### `flow_call.py`
 
@@ -89,6 +96,10 @@ Controls mouse and keyboard on the virtual display:
 - `click_and_type(x, y, text)` - click then paste via `xclip` + Ctrl+V
 - `scroll(direction)` - up / down / left / right
 
+### `cursor_highlight.py`
+
+Draws an orange ring that follows the mouse cursor on the virtual display using the X11 SHAPE extension. Runs as a background process in Docker alongside the agent, making cursor position visible in the noVNC view.
+
 ### `workspace.py`
 
 Starts the virtual desktop environment:
@@ -110,12 +121,26 @@ Defines available flows. Each flow has:
   "name": "Human-readable name",
   "description": "What this flow does - used by find_flow for matching",
   "input_schema": [
-    { "key": "field_key", "description": "Human label shown to user" },
-    { "key": "optional_field", "description": "...", "optional": true }
+    {
+      "key": "field_key",
+      "description": "Human label shown to user"
+    },
+    {
+      "key": "optional_field",
+      "description": "...",
+      "optional": true
+    }
   ],
   "steps": [
-    { "type": "navigate", "url": "https://..." },
-    { "type": "click and paste", "search_description": "Amount field", "input_text": "{field_key.value}" }
+    {
+      "type": "navigate",
+      "url": "https://..."
+    },
+    {
+      "type": "click and paste",
+      "search_description": "Amount field",
+      "input_text": "{field_key.value}"
+    }
   ]
 }
 ```
@@ -154,6 +179,6 @@ Connects a terminal WebSocket client to `ws://localhost:8000/ws`.
 ## Notes
 
 - Chrome profile stored at `~/.config/chrome-virtual` inside the container.
-- `flows/` is mounted as a Docker volume - flow definitions survive container restarts.
-- `agent.log` and `result.jpg` are mounted to the host for easy inspection.
+- `agent.log` is mounted to the host for easy inspection.
+- Eye debug output is saved to `/tmp/result.png` inside the container, viewable at `/img-log`.
 - For NVIDIA GPU passthrough, uncomment the block in `docker-compose.yml`.
