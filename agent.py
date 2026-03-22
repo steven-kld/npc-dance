@@ -43,25 +43,22 @@ _eye.warmup()
 _hand = Hand()
 
 SYSTEM_PROMPT = """/no_think
-You are a flow execution agent. Your only job is to find the right flow, collect data from the user, and return ready-to-execute FlowInstruction objects.
+You are a flow execution agent.
 
 Workflow:
-1. The user describes what they want to do.
-2. Call find_flow with the user's request.
-3. If no flow found — tell the user and stop.
-4. If flow found — show the user:
-   - Flow name and description
-   - List of required fields (labels only, no technical keys)
-   Then say: "Is this the right flow? If yes — provide the data."
-5. If the user says this is the wrong flow — go back to step 1 and search again with the new description.
-6. Once the user provides data — call create_flow_calls EXACTLY ONCE, passing the entire raw user input as-is. No matter how many records — one call only. Never split, never loop, never call the tool more than once.
-7. Show the FULL result of create_flow_calls to the user exactly as returned. Do not modify it.
+1. Call find_flow with the user's message to identify the flow.
+2. If no flow found — tell the user and stop.
+3. Call prepare_flow ONCE with the flow_id and the user's raw input as-is. Show the result to the user.
+4. If the result contains missing fields — wait for the user to provide them, then reconstruct the full corrected record(s) and call prepare_flow again.
+5. Repeat step 4 until all records are complete.
+6. When the user confirms ("ok", "go", "execute", etc.) — call run_flow ONCE with the same flow_id and the last complete user_input.
+7. Show the FULL result of run_flow to the user exactly as returned.
 
 Rules:
-- Never execute anything in the browser.
-- Never ask for more than what the flow's input_schema requires.
-- If the user provides data for multiple records — pass ALL records as one user_input string to create_flow_calls, do NOT call it multiple times.
-- After calling create_flow_calls — show the FULL result text to the user exactly as returned by the tool. Do not summarize it, do not replace it with "OK".
+- Do NOT inspect or validate data yourself. All parsing and validation happens inside the tools.
+- Pass ALL records as one user_input string — never split across multiple calls.
+- When reconstructing input after a user correction, combine all records into one string (one per line).
+- Never call run_flow until the user explicitly confirms.
 """
 
 
@@ -69,10 +66,6 @@ def load_flows() -> list[dict]:
     if not FLOWS_FILE.exists():
         return []
     return json.loads(FLOWS_FILE.read_text(encoding="utf-8"))
-
-
-# Global store: pending calls per thread_id — never touches the model context
-_pending_calls: dict[str, list[dict]] = {}
 
 
 @tool
@@ -127,40 +120,81 @@ def find_flow(user_input: str) -> str:
         return "No matching flow found."
 
 
+def _format_records(flow: dict, user_input: str) -> tuple[str, bool]:
+    """Parse all records and format as a table. Returns (formatted_text, has_missing)."""
+    records = [r.strip() for r in user_input.replace(";", "\n").splitlines() if r.strip()]
+    blocks = []
+    has_missing = False
+
+    for record in records:
+        instruction = FlowInstruction.create(flow, record)
+        lines = []
+        for f in instruction.input_schema:
+            val = str(f["value"]).strip()
+            if not val and not f.get("optional"):
+                lines.append(f'{f["description"]}: ⚠ missing')
+                has_missing = True
+            elif val:
+                lines.append(f'{f["description"]}: {val}')
+        blocks.append("\n".join(lines))
+
+    return "\n----\n".join(blocks), has_missing
+
+
 @tool
-def create_flow_calls(flow_id: str, user_input: str) -> str:
+def prepare_flow(flow_id: str, user_input: str) -> str:
     """
-    Parse user input and create one or more FlowInstruction objects for a given flow.
-    user_input can contain data for multiple records — split by newline or semicolon.
-    Saves valid FlowInstruction objects for later execution. Returns confirmation text.
+    Parse user input for the given flow and display a table of field values per record.
+    Flags missing required fields. Does not execute anything.
     """
     flows = load_flows()
     flow = next((f for f in flows if f["id"] == flow_id), None)
     if not flow:
         return f"Flow '{flow_id}' not found."
 
-    records = [r.strip() for r in user_input.replace(";", "\n").splitlines() if r.strip()]
+    table, has_missing = _format_records(flow, user_input)
+    if has_missing:
+        table += "\n\n⚠ Some required fields are missing. Please provide them."
+    return table
 
+
+@tool
+def run_flow(flow_id: str, user_input: str) -> str:
+    """
+    Parse user input, build FlowInstruction(s), and execute them for the given flow.
+    user_input can contain data for multiple records — split by newline or semicolon.
+    Raises errors if the data is inconsistent with the flow's input_schema.
+    """
+    from flow_call import FlowCall
+    flows = load_flows()
+    flow = next((f for f in flows if f["id"] == flow_id), None)
+    if not flow:
+        return f"Flow '{flow_id}' not found."
+
+    records = [r.strip() for r in user_input.replace(";", "\n").splitlines() if r.strip()]
     results = []
-    valid_calls = []
 
     for i, record in enumerate(records, 1):
+        header = f"Record {i}:\n" if len(records) > 1 else ""
         try:
-            call = FlowInstruction.create(flow, record)
-            header = f"Record {i}:" if len(records) > 1 else ""
-            results.append((header + "\n" if header else "") + str(call))
-            valid_calls.append({
-                "flow": call.flow,
-                "input_schema": call.input_schema,
-                "steps": call.steps,
-            })
-        except ValueError as e:
-            results.append(f"Record {i}: {e}")
+            instruction = FlowInstruction.create(flow, record)
+            missing = [
+                f["description"] for f in instruction.input_schema
+                if not f.get("optional") and not str(f["value"]).strip()
+            ]
+            if missing:
+                results.append(f"{header}Missing required fields: {', '.join(missing)}")
+                continue
+            log.info(f"[run_flow] executing record {i}: {instruction}")
+            FlowCall(instruction, _eye, _hand).run()
+            results.append(f"{header}OK — {instruction}")
+        except (ValueError, RuntimeError) as e:
+            results.append(f"{header}Error: {e}")
 
-    return "\n\n---\n\n".join(results), valid_calls
+    return "\n\n---\n\n".join(results)
 
 
-TOOLS = [find_flow, create_flow_calls]
+TOOLS = [find_flow, prepare_flow, run_flow]
 
 llm = ChatOpenAI(
     model="deepseek-ai/DeepSeek-V3.1",
@@ -184,7 +218,6 @@ def agent_node(state: State, config: RunnableConfig):
 
 
 def tools_node(state: State, config: RunnableConfig):
-    thread_id = config["configurable"]["thread_id"]
     messages = state["messages"]
     last = messages[-1]
     results = []
@@ -195,15 +228,15 @@ def tools_node(state: State, config: RunnableConfig):
 
         if name == "find_flow":
             result = find_flow.invoke(args)
-            results.append(ToolMessage(content=result, tool_call_id=tool_call["id"]))
+        elif name == "prepare_flow":
+            result = prepare_flow.invoke(args)
+        elif name == "run_flow":
+            result = run_flow.invoke(args)
+            log.info(f"[run_flow] result: {result}")
+        else:
+            result = f"Unknown tool: {name}"
 
-        elif name == "create_flow_calls":
-            text, valid_calls = create_flow_calls.invoke(args)
-            # Save pending calls keyed by thread_id — never goes into model context
-            if valid_calls:
-                _pending_calls[thread_id] = _pending_calls.get(thread_id, []) + valid_calls
-                log.info(f"[pending] {len(valid_calls)} call(s) saved for thread {thread_id}")
-            results.append(ToolMessage(content=text, tool_call_id=tool_call["id"]))
+        results.append(ToolMessage(content=result, tool_call_id=tool_call["id"]))
 
     return {"messages": results}
 
@@ -217,25 +250,6 @@ _builder.add_edge("tools", "agent")
 agent = _builder.compile(checkpointer=MemorySaver())
 
 app = FastAPI()
-
-
-@app.post("/run-flow")
-async def run_flow(request: dict):
-    loop = asyncio.get_running_loop()
-    flows = load_flows()
-    flow = next((f for f in flows if f["id"] == "abs142"), None)
-    user_input = request.get("input", "")
-    log.info(f"[run-flow] input: {user_input}")
-
-    def execute():
-        from flow_call import FlowCall
-        instruction = FlowInstruction.create(flow, user_input)
-        log.info(f"[run-flow] instruction: {instruction}")
-        FlowCall(instruction, _eye, _hand).run()
-
-    await loop.run_in_executor(None, execute)
-    return {"status": "ok"}
-
 
 @app.get("/demo")
 async def demo():
@@ -303,6 +317,3 @@ async def chat(ws: WebSocket):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, ws_ping_interval=None)
-
-
-# "Андрей Петров, улица Пушкина дом 16, 4500, DEUTDEFFXXX, COBADEFFXXX, DE89 3704 0044 0532 0130 00", "Андрей Петров, Пушкина 16, 6000, COBADEFFXXX, DE89 3704 0044 0532 0130 00", "Степан Себастьян Иоанович Петровский Корсаков, Пушкина 16, 1000, COBADEFFXXX, DE89 3704 0044 0532 0130 00"

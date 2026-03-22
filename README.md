@@ -1,167 +1,159 @@
-# NPC Dance
+# NPC
 
-A chat-driven browser automation agent. Talk to it in natural language — it controls a real Chrome browser using computer vision and remembers how to do tasks across sessions.
+A flow-driven browser automation agent. Describe what you want to do in natural language - it finds the right flow, parses your data, shows you a preview, and executes it in a real Chrome browser using computer vision.
 
 ---
 
-## Architecture
+## How it works
 
 ```
-User (WebSocket chat)
+User (WebSocket chat / make chat)
     │
     ▼
-agent.py ── LangGraph agent loop (qwen3:8b via Ollama)
-    │            ├── navigate / click / type / scroll / screenshot
-    │            ├── save_flow / read_flow / list_flows   ← persistent memory
-    │            └── ask_user                             ← pauses, asks, resumes
+agent.py - LangGraph agent (DeepSeek-V3.1 via Together AI)
+    │   ├── find_flow      - matches user intent to a flow in flows.json
+    │   ├── prepare_flow   - parses input, shows field preview, flags missing data
+    │   └── run_flow       - excutes on user confirmation
     │
-    ├──► Eye (eye.py) ── screenshot → Ollama qwen3-vl:8b → element coordinates (0-1000 → pixels)
+    ├──► Eye (eye.py) - screenshot → Qwen3-VL-8B (Together AI) → element coordinates
     │
-    └──► Hand (hand.py) ── Bezier mouse movement, xclip paste, keyboard
+    └──► Hand (hand.py) - Bezier mouse movement, xclip paste, keyboard
 
-Workspace (workspace.py) ── Xvfb :2 + Chrome + x11vnc (always running)
-cursor_highlight.py ── orange ring overlay that follows the automation cursor
-noVNC ── browser view at http://localhost:6080/vnc.html
+Workspace (workspace.py) - Xvfb :2 + Chrome + x11vnc
+noVNC - watch the browser at http://localhost:6080
 ```
 
-### `Workspace` ([workspace.py](workspace.py))
+---
+
+## Components
+
+### `agent.py`
+
+FastAPI app with a LangGraph agent loop. Exposed as:
+- `ws://localhost:8000/ws` - WebSocket chat
+- `http://localhost:8000/log` - live agent log
+- `http://localhost:8000/img-log` - last Eye screenshot with bbox overlay
+
+**Agent tools:**
+
+| Tool | What it does |
+|---|---|
+| `find_flow` | LLM-matches the user's message to a flow in `flows.json` |
+| `prepare_flow` | Parses user input into field values, renders a preview table, flags `⚠ missing` required fields |
+| `run_flow` | Same parse step, then executes each record sequentially via `FlowCall` |
+
+**Conversation flow:**
+1. User describes what they want → `find_flow` picks a flow
+2. User provides data → `prepare_flow` shows preview
+3. User fills missing fields → `prepare_flow` again with corrections
+4. User says "go" → `run_flow` executes
+
+Multiple records are supported - send them one per line, all in one message.
+
+### `flow_instruction.py`
+
+Takes a flow definition + raw user input string, calls DeepSeek to extract field values into the flow's `input_schema`, and returns a `FlowInstruction` with rendered steps ready to execute.
+
+### `flow_call.py`
+
+Executes a `FlowInstruction` step by step using `Eye` and `Hand`.
+
+**Step types:**
+
+| type | fields | description |
+|---|---|---|
+| `navigate` | `url` | Navigate browser to URL |
+| `click` | `search_description` | Locate element visually and click |
+| `click and paste` | `search_description`, `input_text` | Click field then paste text |
+| `locate` | `search_description` | Assert element is visible, no click |
+| `scroll` | - | Scroll down |
+| `press enter` | - | Press Enter |
+| `wait sec` | `seconds` | Sleep N seconds |
+| `wait until locate` | `search_description`, `timeout_sec` | Poll until element found or timeout |
+
+`input_text` supports `{key.value}` placeholders - substituted with parsed field values at runtime.
+
+### `eye.py`
+
+Takes a screenshot of the virtual display, sends it to `Qwen3-VL-8B` on Together AI, and returns the bounding box and center pixel coordinates of the requested UI element.
+
+- Coordinates from the model are in 0–1000 normalized space, scaled to real screen pixels
+- Saves the annotated result to `/tmp/result.png` (viewable at `/img-log`)
+
+### `hand.py`
+
+Controls mouse and keyboard on the virtual display:
+- `navigate(url)` - Ctrl+L → paste URL → Enter
+- `move(x, y)` - quadratic Bezier curve with randomised control point
+- `click(x, y)` - smooth move then click
+- `click_and_type(x, y, text)` - click then paste via `xclip` + Ctrl+V
+- `scroll(direction)` - up / down / left / right
+
+### `workspace.py`
 
 Starts the virtual desktop environment:
 1. Xvfb on display `:2` (1920×1080)
-2. Google Chrome (no URL — navigation is done by `Hand.navigate()`)
+2. Google Chrome
 3. x11vnc on port `5900`
-4. Touches `/tmp/space_ready` to signal readiness
 
-`connect()` — lightweight function that patches pyautogui onto the already-running display `:2`. Used by `agent.py` at startup.
+`connect()` patches pyautogui onto display `:2`. Called by `agent.py` at startup.
 
-In Docker, `workspace.py --run` is started by `docker-start.sh` and runs as a background process for the lifetime of the container.
+In Docker, `workspace.py --run` runs as a background process for the lifetime of the container.
 
-### `Eye` ([eye.py](eye.py))
+### `flows.json`
 
-Takes a screenshot and asks a remote vision LLM to locate a UI element by description. Returns bounding box + center coordinates.
+Defines available flows. Each flow has:
 
-- Model: `qwen3-vl:8b` via Ollama (hosted on vast.ai)
-- Input: natural language query e.g. `"Submit button"`
-- Output: `{"bbox_2d": [...], "center": (cx, cy)}`
-- Coordinates returned by the model are in 0–1000 normalized space and scaled to real screen pixels
-
-### `Hand` ([hand.py](hand.py))
-
-Controls mouse and keyboard:
-- `navigate(url)` — Ctrl+L → paste URL → Enter
-- `move(x, y)` — quadratic Bezier curve with randomised control point
-- `click(x, y)` — smooth move then click
-- `click_and_type(x, y, text)` — click then paste via `xclip` + Ctrl+V
-- `scroll(direction)` — up / down / left / right
-
-### `agent.py` ([agent.py](agent.py))
-
-LangGraph `StateGraph` with `qwen3:8b` (via Ollama on vast.ai) as the reasoning model. Exposed as a FastAPI WebSocket server on port `8000`.
-
-- Thinking mode disabled (`/no_think`) for faster responses
-- Agent responds with `"OK"` on success or a short error sentence on failure
-- Logs all user messages, tool calls, and thoughts to `agent.log` (cleared on startup), readable at `http://localhost:8000/log`
-
-**Tools available to the agent:**
-
-| Tool | Description |
-|---|---|
-| `navigate` | opens a URL |
-| `click` | Eye locates element → Hand clicks |
-| `type_text` | Eye locates element → Hand types |
-| `scroll` | scrolls the page |
-| `save_flow` | writes `flows/<name>.md` — a named procedure |
-| `read_flow` | reads a saved procedure |
-| `list_flows` | lists all saved procedures |
-| `ask_user` | **pauses the graph**, sends question to user, resumes on reply |
-
-**Flow memory** — procedures are stored as markdown files in `flows/`. The agent reads them before executing a task and rewrites them when the user corrects an error. The `flows/` directory is mounted as a Docker volume so memory persists across container restarts.
-
----
-
-## Hardware requirements (vast.ai GPU)
-
-| | GPU | VRAM |
-|---|---|---|
-| **Minimum** | RTX 3080 Ti / 4070 Ti | 12 GB |
-| **Recommended** | RTX 3090 / 4090 / A10G | 24 GB |
-
-Both models (`qwen3-vl:8b` ~6 GB + `qwen3:8b` ~5.5 GB) stay loaded simultaneously, totalling ~12 GB VRAM.
+```json
+{
+  "id": "unique_id",
+  "name": "Human-readable name",
+  "description": "What this flow does - used by find_flow for matching",
+  "input_schema": [
+    { "key": "field_key", "description": "Human label shown to user" },
+    { "key": "optional_field", "description": "...", "optional": true }
+  ],
+  "steps": [
+    { "type": "navigate", "url": "https://..." },
+    { "type": "click and paste", "search_description": "Amount field", "input_text": "{field_key.value}" }
+  ]
+}
+```
 
 ---
 
 ## Setup
 
-### 1. vast.ai — Ollama GPU instance
-
-Deploy a GPU instance on [vast.ai](https://vast.ai) with Ollama. Once running:
-
-**Get the token:**
-```bash
-ollama pull qwen3-vl:8b
-ollama pull qwen3:8b
-# verify
-ollama list
-# get token
-env | grep TOKEN
-```
-
-**Get the public URL** from the instance logs — look for the cloudflare tunnel line:
-```
-[http://localhost:21434] 2026-03-08T09:12:15Z INF |  Your quick Tunnel has been created!
-# The public URL is the one printed just before or after this line
-```
-
-### 2. Environment variables
+### 1. Environment
 
 Create a `.env` file in the project root:
+
 ```env
-OLLAMA_URL=https://<your-tunnel>.trycloudflare.com
-OLLAMA_TOKEN=<token from env | grep TOKEN>
+TOGETHER_AI_API_KEY=your_key_here
 ```
 
-### 3. Run
+### 2. Run
 
 ```bash
-docker compose up --build
+make up
 ```
 
-- **Browser view:** http://localhost:6080 (redirects to `vnc.html`)
-- **Agent chat:** `ws://localhost:8000/ws`
+- **Browser view:** http://localhost:6080
 - **Agent log:** http://localhost:8000/log
-- **Quick CLI test:** `python chat.py`
 
-GPU passthrough (Intel/AMD) is enabled by default via `/dev/dri`. For NVIDIA, uncomment the block in [docker-compose.yml](docker-compose.yml).
+### 3. Chat
 
----
-
-## Usage
-
-Connect to `ws://localhost:8000/ws` and send JSON messages:
-```json
-{"content": "go to amazon and search for mechanical keyboards"}
+```bash
+make chat
 ```
 
-The agent replies `"OK"` on success or a short error sentence if something failed.
-
-**Teaching the agent a flow:**
-```
-user: go to seller central, click Add product, fill title with "X", price with "Y", click Save
-sys:  OK
-user: remember this as amazon_insert
-sys:  OK
-```
-
-**Running a batch:**
-```
-user: here are 50 products to insert: [...]
-sys:  OK (x50, with ask_user pausing on errors)
-```
+Connects a terminal WebSocket client to `ws://localhost:8000/ws`.
 
 ---
 
 ## Notes
 
 - Chrome profile stored at `~/.config/chrome-virtual` inside the container.
-- `flows/` is mounted as a volume — procedures survive container restarts.
-- No `--no-sandbox` or bot flags — Chrome runs as a non-root user with full sandbox.
+- `flows/` is mounted as a Docker volume - flow definitions survive container restarts.
+- `agent.log` and `result.jpg` are mounted to the host for easy inspection.
+- For NVIDIA GPU passthrough, uncomment the block in `docker-compose.yml`.
