@@ -1,0 +1,83 @@
+[
+    {
+        "id": "abs142",
+        "name": "Заполнить демо",
+        "description": "Заполнение одного или нескольких драфтов для банковских выплат в Демо Банке",
+        "start_url": "http://localhost:8000/demo",
+        "input_schema": [
+            {
+                "key": "полное_имя",
+                "description": "Полное имя получателя"
+            },
+            {
+                "key": "iban",
+                "description": "IBAN счёта получателя, без пробелов"
+            },
+            {
+                "key": "bic_swift",
+                "description": "BIC или SWIFT код банка получателя"
+            },
+            {
+                "key": "промежуточный_bic",
+                "description": "BIC промежуточного банка (если есть)",
+                "optional": true
+            },
+            {
+                "key": "полный_адрес",
+                "description": "Адрес получателя"
+            },
+            {
+                "key": "сумма",
+                "description": "Сумма перевода"
+            }
+        ],
+        "steps": [
+            {
+                "type": "navigate",
+                "url": "http://localhost:8000/demo"
+            },
+            {
+                "type": "click and paste",
+                "search_description": "поле Полное имя",
+                "input_text": "{полное_имя.value}"
+            },
+            {
+                "type": "click and paste",
+                "search_description": "поле IBAN",
+                "input_text": "{iban.value}"
+            },
+            {
+                "type": "click and paste",
+                "search_description": "поле BIC / SWIFT",
+                "input_text": "{bic_swift.value}"
+            },
+            {
+                "type": "click and paste",
+                "search_description": "поле Промежуточный BIC",
+                "input_text": "{промежуточный_bic.value}"
+            },
+            {
+                "type": "click and paste",
+                "search_description": "поле Полный адрес",
+                "input_text": "{полный_адрес.value}"
+            },
+            {
+                "type": "click and paste",
+                "search_description": "поле Сумма",
+                "input_text": "{сумма.value}"
+            },
+            {
+                "type": "click",
+                "search_description": "кнопка Submit"
+            },
+            {
+                "type": "wait sec",
+                "seconds": 2
+            },
+            {
+                "type": "click",
+                "search_description": "кнопка Add one more"
+            }
+        ]
+    }
+]
