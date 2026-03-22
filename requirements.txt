@@ -1,7 +1,8 @@
 pyautogui
 python-xlib
 Pillow
-requests
+tenacity
+python-dotenv
 langgraph
 langchain_openai
 langchain-core

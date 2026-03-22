@@ -7,16 +7,10 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 from openai import OpenAI
 
+from core.prompts import EYE_SYSTEM
+
 TOGETHER_BASE_URL = "https://api.together.xyz/v1"
 TOGETHER_MODEL = "Qwen/Qwen3-VL-8B-Instruct"
-
-SYSTEM_PROMPT = """You are a UI element detector. Analyze the screenshot and locate the requested element.
-Respond ONLY with a valid JSON object, no explanation, no markdown, no backticks.
-Use exactly one of these 2 formats:
-1. Element clearly found:
-{"bbox_2d": [x1, y1, x2, y2], "label": "element name"}
-2. Not found:
-{"info": <str>}"""
 
 
 def take_screenshot() -> Image.Image:
@@ -36,7 +30,7 @@ class Eye:
         self,
         api_key: str,                      # pass os.environ["TOGETHER_API_KEY"]
         model: str = TOGETHER_MODEL,
-        system_prompt: str = SYSTEM_PROMPT,
+        system_prompt: str = EYE_SYSTEM,
     ):
         self.model = model
         self.system_prompt = system_prompt

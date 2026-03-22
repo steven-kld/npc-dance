@@ -1,7 +1,7 @@
 import time
-from eye import Eye
-from hand import Hand
-from flow_instruction import FlowInstruction
+from automation.eye import Eye
+from automation.hand import Hand
+from automation.flow_instruction import FlowInstruction
 
 
 class FlowCall:

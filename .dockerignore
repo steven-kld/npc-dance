@@ -2,7 +2,5 @@ venv/
 __pycache__/
 *.pyc
 .git/
-imgs/
-record/
-result.jpg
+.env
 *.deb

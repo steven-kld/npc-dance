@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import JsonOutputParser
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from openai import APIConnectionError
+from core.prompts import FLOW_EXTRACT_SYSTEM
 
 _llm = ChatOpenAI(
     model="deepseek-ai/DeepSeek-V3.1",
@@ -31,12 +32,9 @@ class FlowInstruction:
             for f in schema
         )
 
-        system = (
-            "Extract the fields from the user's input. "
-            "Return ONLY a JSON object with no explanation.\n"
-            "For missing or absent fields use empty string \"\", never null, never \"none\".\n\n"
-            f"Fields:\n{schema_description}\n\n"
-            f'Keys: {", ".join(f["key"] for f in schema)}'
+        system = FLOW_EXTRACT_SYSTEM.format(
+            schema_description=schema_description,
+            keys=", ".join(f["key"] for f in schema),
         )
 
         @retry(
